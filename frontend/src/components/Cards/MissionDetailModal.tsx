@@ -13,15 +13,47 @@ import {
   XCircle,
   AlertTriangle
 } from 'lucide-react';
-import { SpaceMission } from '../../types';
+import { SpaceMission, CleanedMissionRecord } from '../../types';
 
 interface MissionDetailModalProps {
-  mission: SpaceMission | null;
+  mission: SpaceMission | CleanedMissionRecord | null;
   onClose: () => void;
 }
 
 export const MissionDetailModal: React.FC<MissionDetailModalProps> = ({ mission, onClose }) => {
   if (!mission) return null;
+
+  // Normalized accessor helper for both legacy SpaceMission and CleanedMissionRecord
+  const isCleaned = 'launch_tag' in mission;
+
+  const id = isCleaned ? mission.launch_tag : mission.id;
+  const name = isCleaned 
+    ? (mission.mission || mission.flight || mission.launch_vehicle) 
+    : mission.name;
+  const agency = mission.agency;
+  const country = isCleaned ? (mission.launch_country || mission.site_country) : mission.country;
+  const launchSite = isCleaned 
+    ? `${mission.launch_site}${mission.launch_pad ? ` (${mission.launch_pad})` : ''}` 
+    : mission.launchSite;
+  const launchDate = isCleaned 
+    ? `${mission.date}${mission.time_utc ? ` ${mission.time_utc} UTC` : ''}` 
+    : mission.launchDate;
+  const year = mission.year;
+  const decade = isCleaned ? `${Math.floor(year / 10) * 10}s` : mission.decade;
+  const vehicle = isCleaned ? mission.launch_vehicle : mission.vehicle;
+  const orbit = isCleaned ? mission.launch_class : mission.orbit;
+  const status = isCleaned ? mission.outcome : mission.status;
+  const payloadMass = isCleaned 
+    ? (mission.payload_mass_t !== null ? `${(mission.payload_mass_t * 1000).toLocaleString()} kg (${mission.payload_mass_t} t)` : 'Classified / Not Disclosed')
+    : (mission.payloadMassKg ? `${mission.payloadMassKg.toLocaleString()} kg` : 'Classified / N/A');
+
+  const apogeeText = isCleaned && mission.apogee_km !== null ? `${mission.apogee_km.toLocaleString()} km` : null;
+  const perigeeText = isCleaned && mission.perigee_km !== null ? `${mission.perigee_km.toLocaleString()} km` : null;
+  const inclinationText = isCleaned && mission.inclination_deg !== null ? `${mission.inclination_deg}°` : null;
+
+  const details = isCleaned
+    ? `Flight record ${mission.launch_tag} (${mission.flight || 'Unspecified flight designation'}). Mission categorized under code ${mission.launch_code} launched by ${mission.agency} from ${mission.launch_site}, ${mission.site_country}. Target flight profile: ${mission.launch_class}.`
+    : mission.details;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
@@ -34,32 +66,28 @@ export const MissionDetailModal: React.FC<MissionDetailModalProps> = ({ mission,
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#39D5F2]/15 text-[#39D5F2] border border-[#39D5F2]/30 font-semibold">
-                {mission.id}
+                {id}
               </span>
               <span className="text-[10px] font-mono text-[#8798B3] uppercase">
-                {mission.decade} ERA
+                {decade} ERA
               </span>
             </div>
             <h2 className="text-xl font-display font-bold text-white tracking-wide">
-              {mission.name}
+              {name}
             </h2>
             <p className="text-xs text-[#8798B3] font-mono">
-              {mission.agency} • {mission.country}
+              {agency} • {country}
             </p>
           </div>
 
           <div className="flex items-center gap-3">
             <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-semibold ${
-              mission.status === 'Success'
+              status === 'Success'
                 ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30'
-                : mission.status === 'Failure'
-                  ? 'bg-[#F43F5E]/15 text-[#F43F5E] border border-[#F43F5E]/30'
-                  : 'bg-[#F59E0B]/15 text-[#F59E0B] border border-[#F59E0B]/30'
+                : 'bg-[#F43F5E]/15 text-[#F43F5E] border border-[#F43F5E]/30'
             }`}>
-              {mission.status === 'Success' && <CheckCircle2 className="w-3.5 h-3.5" />}
-              {mission.status === 'Failure' && <XCircle className="w-3.5 h-3.5" />}
-              {mission.status === 'Partial Failure' && <AlertTriangle className="w-3.5 h-3.5" />}
-              <span>{mission.status.toUpperCase()}</span>
+              {status === 'Success' ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+              <span>{status.toUpperCase()}</span>
             </div>
 
             <button
@@ -80,7 +108,7 @@ export const MissionDetailModal: React.FC<MissionDetailModalProps> = ({ mission,
               MISSION BRIEF & FLIGHT PROFILE
             </h3>
             <p className="text-sm text-[#EAF3FF] leading-relaxed">
-              {mission.details}
+              {details}
             </p>
           </div>
 
@@ -91,18 +119,18 @@ export const MissionDetailModal: React.FC<MissionDetailModalProps> = ({ mission,
                 <Rocket className="w-3 h-3 text-[#39D5F2]" />
                 LAUNCH VEHICLE
               </div>
-              <div className="text-xs font-semibold text-white font-mono">
-                {mission.vehicle}
+              <div className="text-xs font-semibold text-white font-mono truncate" title={vehicle}>
+                {vehicle}
               </div>
             </div>
 
             <div className="p-3 rounded-xl bg-[#101B2D]/50 border border-white/5 space-y-1">
               <div className="text-[10px] font-mono text-[#8798B3] flex items-center gap-1.5">
                 <Globe2 className="w-3 h-3 text-[#648CFF]" />
-                TARGET ORBIT
+                TARGET DOMAIN / ORBIT
               </div>
               <div className="text-xs font-semibold text-[#39D5F2] font-mono">
-                {mission.orbit}
+                {orbit}
               </div>
             </div>
 
@@ -112,7 +140,7 @@ export const MissionDetailModal: React.FC<MissionDetailModalProps> = ({ mission,
                 LAUNCH DATE
               </div>
               <div className="text-xs font-semibold text-white font-mono">
-                {mission.launchDate}
+                {launchDate}
               </div>
             </div>
 
@@ -122,39 +150,40 @@ export const MissionDetailModal: React.FC<MissionDetailModalProps> = ({ mission,
                 PAYLOAD MASS
               </div>
               <div className="text-xs font-semibold text-white font-mono">
-                {mission.payloadMassKg ? `${mission.payloadMassKg.toLocaleString()} kg` : 'Classified / N/A'}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-xl bg-[#101B2D]/50 border border-white/5 space-y-1">
-              <div className="text-[10px] font-mono text-[#8798B3] flex items-center gap-1.5">
-                <DollarSign className="w-3 h-3 text-[#10B981]" />
-                EST. MISSION COST
-              </div>
-              <div className="text-xs font-semibold text-white font-mono">
-                {mission.costMillionUSD ? `$${mission.costMillionUSD.toLocaleString()}M USD` : 'Not Disclosed'}
+                {payloadMass}
               </div>
             </div>
 
             <div className="p-3 rounded-xl bg-[#101B2D]/50 border border-white/5 space-y-1">
               <div className="text-[10px] font-mono text-[#8798B3] flex items-center gap-1.5">
                 <Crosshair className="w-3 h-3 text-[#F59E0B]" />
-                PAYLOAD CLASS
+                APOGEE
               </div>
-              <div className="text-xs font-semibold text-white truncate">
-                {mission.payloadType}
+              <div className="text-xs font-semibold text-white font-mono">
+                {apogeeText || 'N/A (Suborbital/Escape)'}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-[#101B2D]/50 border border-white/5 space-y-1">
+              <div className="text-[10px] font-mono text-[#8798B3] flex items-center gap-1.5">
+                <Building2 className="w-3 h-3 text-[#10B981]" />
+                INCLINATION
+              </div>
+              <div className="text-xs font-semibold text-white font-mono">
+                {inclinationText || 'N/A'}
               </div>
             </div>
           </div>
 
-          {/* Launch Complex Coordinates */}
-          <div className="p-4 rounded-xl bg-[#101B2D]/40 border border-white/5 flex items-center justify-between">
+          {/* Launch Complex & Pad */}
+          <div className="p-4 rounded-xl bg-[#101B2D]/40 border border-white/5 flex items-center justify-between font-mono text-xs">
             <div>
-              <span className="text-[10px] font-mono text-[#8798B3] block">LAUNCH FACILITY</span>
-              <span className="text-xs font-semibold text-white">{mission.launchSite}</span>
+              <span className="text-[10px] text-[#8798B3] block">LAUNCH FACILITY</span>
+              <span className="font-semibold text-white">{launchSite}</span>
             </div>
-            <div className="text-right font-mono text-xs text-[#39D5F2]">
-              {mission.coordinates[0].toFixed(4)}° N, {mission.coordinates[1].toFixed(4)}° E
+            <div className="text-right">
+              <span className="text-[10px] text-[#8798B3] block">COUNTRY / JURISDICTION</span>
+              <span className="text-[#39D5F2] font-semibold">{country}</span>
             </div>
           </div>
         </div>

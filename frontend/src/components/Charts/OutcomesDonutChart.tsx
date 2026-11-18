@@ -1,15 +1,36 @@
 import React, { useState } from 'react';
 
-export const OutcomesDonutChart: React.FC = () => {
+interface OutcomesDonutChartProps {
+  successCount?: number;
+  failureCount?: number;
+}
+
+export const OutcomesDonutChart: React.FC<OutcomesDonutChartProps> = ({
+  successCount = 6923,
+  failureCount = 507,
+}) => {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
-  const outcomes = [
-    { label: 'Full Success', count: 4198, percent: 89.6, color: '#10B981', desc: 'Payload deployed accurately to nominal target orbit' },
-    { label: 'Catastrophic Failure', count: 348, percent: 7.4, color: '#F43F5E', desc: 'Booster anomaly, explosion, or vehicle loss' },
-    { label: 'Partial Mission Failure', count: 136, percent: 2.9, color: '#F59E0B', desc: 'Under-burn, anomalous orbital insertion, or sub-nominal apogee' },
-  ];
+  const total = successCount + failureCount;
+  const successPct = total > 0 ? Number(((successCount / total) * 100).toFixed(1)) : 0;
+  const failurePct = total > 0 ? Number(((failureCount / total) * 100).toFixed(1)) : 0;
 
-  const total = outcomes.reduce((acc, curr) => acc + curr.count, 0);
+  const outcomes = [
+    {
+      label: 'Successful Missions',
+      count: successCount,
+      percent: successPct,
+      color: '#10B981',
+      desc: 'Nominal liftoff and successful orbital/trajectory delivery'
+    },
+    {
+      label: 'Launch / Mission Failures',
+      count: failureCount,
+      percent: failurePct,
+      color: '#F43F5E',
+      desc: 'Booster anomaly, upper stage failure, or vehicle loss'
+    },
+  ];
 
   // SVG parameters
   const size = 200;
@@ -62,14 +83,14 @@ export const OutcomesDonutChart: React.FC = () => {
 
         {/* Center Telemetry Display */}
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <span className="text-[10px] font-mono text-[#8798B3] uppercase tracking-wider">
+          <span className="text-[10px] font-mono text-[#8798B3] uppercase tracking-wider text-center px-2">
             {hoveredIndex !== null ? outcomes[hoveredIndex].label : 'SUCCESS RATE'}
           </span>
           <span className="text-2xl font-display font-bold text-white tracking-tight">
-            {hoveredIndex !== null ? `${outcomes[hoveredIndex].percent}%` : '89.6%'}
+            {hoveredIndex !== null ? `${outcomes[hoveredIndex].percent}%` : `${successPct}%`}
           </span>
           <span className="text-[10px] font-mono text-[#39D5F2]">
-            {hoveredIndex !== null ? `${outcomes[hoveredIndex].count.toLocaleString()} MISSIONS` : '4,682 TOTAL'}
+            {hoveredIndex !== null ? `${outcomes[hoveredIndex].count.toLocaleString()} MISSIONS` : `${total.toLocaleString()} TOTAL`}
           </span>
         </div>
       </div>
@@ -81,7 +102,7 @@ export const OutcomesDonutChart: React.FC = () => {
             key={item.label}
             onMouseEnter={() => setHoveredIndex(index)}
             onMouseLeave={() => setHoveredIndex(null)}
-            className={`flex items-center justify-between p-2 rounded-xl transition cursor-pointer ${
+            className={`flex items-center justify-between p-2.5 rounded-xl transition cursor-pointer ${
               hoveredIndex === index ? 'bg-[#101B2D] border border-white/10' : 'hover:bg-white/5 border border-transparent'
             }`}
           >

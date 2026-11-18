@@ -1,11 +1,16 @@
 import React, { useState } from 'react';
 import { HISTORICAL_DECADE_DATA } from '../../data/spaceData';
+import { DecadeCadenceStat } from '../../types';
 
-export const ActivityAreaChart: React.FC = () => {
+interface ActivityAreaChartProps {
+  data?: DecadeCadenceStat[];
+}
+
+export const ActivityAreaChart: React.FC<ActivityAreaChartProps> = ({ data: propData }) => {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
-  const data = HISTORICAL_DECADE_DATA;
-  const maxVal = Math.max(...data.map(d => d.total));
+  const data = (propData && propData.length > 0) ? propData : HISTORICAL_DECADE_DATA;
+  const maxVal = Math.max(...data.map(d => d.total), 1);
   const svgWidth = 600;
   const svgHeight = 220;
   const padding = { top: 20, right: 30, bottom: 40, left: 45 };
@@ -15,7 +20,8 @@ export const ActivityAreaChart: React.FC = () => {
 
   // Build coordinate points
   const points = data.map((d, i) => {
-    const x = padding.left + (i / (data.length - 1)) * chartWidth;
+    const divisor = data.length > 1 ? data.length - 1 : 1;
+    const x = padding.left + (i / divisor) * chartWidth;
     const y = padding.top + chartHeight - (d.total / maxVal) * chartHeight;
     return { x, y, ...d };
   });
@@ -166,16 +172,16 @@ export const ActivityAreaChart: React.FC = () => {
         >
           <div className="flex items-center justify-between gap-4 border-b border-white/10 pb-1">
             <span className="font-bold text-white">{data[hoveredIdx].decade}</span>
-            <span className="text-[#39D5F2]">{data[hoveredIdx].total} Launches</span>
+            <span className="text-[#39D5F2]">{data[hoveredIdx].total.toLocaleString()} Launches</span>
           </div>
           <div className="grid grid-cols-2 gap-3 text-[11px]">
             <div>
               <span className="text-[#8798B3] block">Successful</span>
-              <span className="text-[#10B981] font-bold">{data[hoveredIdx].success}</span>
+              <span className="text-[#10B981] font-bold">{data[hoveredIdx].success.toLocaleString()}</span>
             </div>
             <div>
               <span className="text-[#8798B3] block">Failures</span>
-              <span className="text-[#F43F5E] font-bold">{data[hoveredIdx].failure}</span>
+              <span className="text-[#F43F5E] font-bold">{data[hoveredIdx].failure.toLocaleString()}</span>
             </div>
           </div>
           <div className="pt-1 border-t border-white/5 flex items-center justify-between text-[10px]">

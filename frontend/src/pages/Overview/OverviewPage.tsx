@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Rocket, 
   CheckCircle2, 
@@ -6,21 +6,28 @@ import {
   Percent, 
   Globe2, 
   Building2, 
-  Layers, 
   TrendingUp, 
   Compass, 
-  ExternalLink,
   ChevronRight,
-  ShieldCheck,
-  Activity
+  ChevronLeft,
+  Loader2,
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react';
 import { InteractiveGlobe } from '../../components/Globe/InteractiveGlobe';
 import { ActivityAreaChart } from '../../components/Charts/ActivityAreaChart';
 import { OutcomesDonutChart } from '../../components/Charts/OutcomesDonutChart';
 import { CountryBarChart } from '../../components/Charts/CountryBarChart';
 import { MissionDetailModal } from '../../components/Cards/MissionDetailModal';
-import { LAUNCH_SITES, SAMPLE_MISSIONS } from '../../data/spaceData';
-import { LaunchSite, SpaceMission, FilterState } from '../../types';
+import { LAUNCH_SITES } from '../../data/spaceData';
+import { LaunchSite, FilterState, CleanedMissionRecord } from '../../types';
+import { 
+  loadCleanedSpaceMissions,
+  calculateSummaryStats,
+  calculateDecadeCadence,
+  calculateCountryStats,
+  calculateLaunchSiteStats
+} from '../../services/dataService';
 
 interface OverviewPageProps {
   filters: FilterState;
@@ -33,33 +40,161 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   onNavigateToExplorer,
   onNavigateToAnalytics,
 }) => {
-  const [selectedSite, setSelectedSite] = useState<LaunchSite>(LAUNCH_SITES[0]);
-  const [selectedMission, setSelectedMission] = useState<SpaceMission | null>(null);
+  const [missions, setMissions] = useState<CleanedMissionRecord[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Filter missions based on top header state
-  const filteredMissions = SAMPLE_MISSIONS.filter(m => {
-    if (filters.selectedCountry !== 'All' && m.country !== filters.selectedCountry) return false;
-    if (filters.selectedType !== 'All' && m.payloadType !== filters.selectedType) return false;
-    if (m.year < filters.yearRange[0] || m.year > filters.yearRange[1]) return false;
-    return true;
-  });
+  const [selectedSite, setSelectedSite] = useState<LaunchSite>(LAUNCH_SITES[0]);
+  const [selectedMission, setSelectedMission] = useState<CleanedMissionRecord | null>(null);
+  const [tablePage, setTablePage] = useState<number>(1);
+  const pageSize = 7;
+
+  // 1. Fetch real dataset on mount
+  useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    setError(null);
+
+    loadCleanedSpaceMissions()
+      .then((records) => {
+        if (isMounted) {
+          setMissions(records);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (isMounted) {
+          setError(err instanceof Error ? err.message : 'Failed to load space missions dataset');
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 2. Filter missions dynamically based on global filter state
+  const filteredMissions = useMemo(() => {
+    return missions.filter((m) => {
+      // Year range filter
+      if (m.year < filters.yearRange[0] || m.year > filters.yearRange[1]) {
+        return false;
+      }
+
+      // Country filter
+      if (filters.selectedCountry !== 'All') {
+        const countryMatch = 
+          m.launch_country === filters.selectedCountry || 
+          m.site_country === filters.selectedCountry;
+        if (!countryMatch) return false;
+      }
+
+      // Mission Type / Launch Class filter
+      if (filters.selectedType !== 'All') {
+        if (filters.selectedType === 'Deep space' && m.launch_class !== 'Deep space') return false;
+        if (filters.selectedType === 'Orbital' && m.launch_class !== 'Orbital') return false;
+      }
+
+      // Status filter
+      if (filters.selectedStatus !== 'All') {
+        if (m.outcome !== filters.selectedStatus) return false;
+      }
+
+      // Global search query filter
+      if (filters.searchQuery.trim() !== '') {
+        const q = filters.searchQuery.toLowerCase();
+        const matchesQuery =
+          (m.mission && m.mission.toLowerCase().includes(q)) ||
+          (m.flight && m.flight.toLowerCase().includes(q)) ||
+          m.launch_vehicle.toLowerCase().includes(q) ||
+          m.agency.toLowerCase().includes(q) ||
+          m.launch_site.toLowerCase().includes(q) ||
+          m.launch_country.toLowerCase().includes(q) ||
+          m.launch_tag.toLowerCase().includes(q);
+        if (!matchesQuery) return false;
+      }
+
+      return true;
+    });
+  }, [missions, filters]);
+
+  // 3. Compute statistical aggregates using data service functions
+  const summaryStats = useMemo(() => calculateSummaryStats(filteredMissions), [filteredMissions]);
+  const decadeData = useMemo(() => calculateDecadeCadence(filteredMissions), [filteredMissions]);
+  const countryData = useMemo(() => calculateCountryStats(filteredMissions), [filteredMissions]);
+  const launchSiteStats = useMemo(() => calculateLaunchSiteStats(filteredMissions), [filteredMissions]);
+
+  // Real-time lookup for the selected site on the globe
+  const selectedSiteRealStats = useMemo(() => {
+    if (!selectedSite) return null;
+    return launchSiteStats.find(s => 
+      s.siteName.toLowerCase().includes(selectedSite.name.toLowerCase().split(' ')[0]) ||
+      selectedSite.name.toLowerCase().includes(s.siteName.toLowerCase().split(' ')[0])
+    ) || null;
+  }, [selectedSite, launchSiteStats]);
+
+  // Paginated records for the flight operations log
+  const totalTablePages = Math.ceil(filteredMissions.length / pageSize) || 1;
+  const currentTableRecords = useMemo(() => {
+    const start = (tablePage - 1) * pageSize;
+    return filteredMissions.slice(start, start + pageSize);
+  }, [filteredMissions, tablePage]);
+
+  // Reset page if filters change
+  useEffect(() => {
+    setTablePage(1);
+  }, [filters]);
+
+  if (loading) {
+    return (
+      <div className="min-h-[500px] flex flex-col items-center justify-center space-y-4 font-mono text-xs">
+        <Loader2 className="w-8 h-8 text-[#39D5F2] animate-spin" />
+        <div className="text-white font-semibold tracking-wider">
+          INITIALIZING TELEMETRY STREAM & CANONICAL DATA ENGINE...
+        </div>
+        <div className="text-[#8798B3] text-[11px]">
+          Parsing 7,430 verified orbital flight records from dataset
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-6 rounded-2xl bg-[#0A1222] border border-[#F43F5E]/40 space-y-3 font-mono text-xs">
+        <div className="flex items-center gap-2 text-[#F43F5E] font-bold">
+          <AlertCircle className="w-5 h-5" />
+          <span>DATASET CONNECTION ERROR</span>
+        </div>
+        <p className="text-[#8798B3]">{error}</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#F43F5E]/15 border border-[#F43F5E]/30 text-white hover:bg-[#F43F5E]/25 transition"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          <span>RETRY TELEMETRY LINK</span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-fadeIn pb-12">
-      {/* 1. Executive Telemetry Row (6 High-Density KPI Cards) */}
+      {/* 1. Executive Telemetry Row (6 High-Density KPI Cards Powered by Real Data) */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3.5">
         {/* Total Missions */}
         <div className="space-panel p-4 rounded-2xl relative overflow-hidden group">
           <div className="flex items-center justify-between text-[#8798B3] mb-2">
-            <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">TOTAL MISSIONS</span>
+            <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">TOTAL LAUNCHES</span>
             <Rocket className="w-4 h-4 text-[#39D5F2]" />
           </div>
           <div className="text-2xl font-display font-bold text-white tracking-tight">
-            4,682
+            {summaryStats.totalLaunches.toLocaleString()}
           </div>
           <div className="flex items-center gap-1.5 mt-2 text-[10px] font-mono text-[#39D5F2]">
             <TrendingUp className="w-3 h-3" />
-            <span>+142 in 2024</span>
+            <span>{summaryStats.yearMax} Latest Data</span>
           </div>
           <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#39D5F2] to-transparent opacity-70" />
         </div>
@@ -71,7 +206,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
             <CheckCircle2 className="w-4 h-4 text-[#10B981]" />
           </div>
           <div className="text-2xl font-display font-bold text-[#10B981] tracking-tight">
-            4,198
+            {summaryStats.successfulLaunches.toLocaleString()}
           </div>
           <div className="flex items-center gap-1.5 mt-2 text-[10px] font-mono text-[#8798B3]">
             <span>Nominal payload delivery</span>
@@ -82,14 +217,18 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
         {/* Failed Missions */}
         <div className="space-panel p-4 rounded-2xl relative overflow-hidden group">
           <div className="flex items-center justify-between text-[#8798B3] mb-2">
-            <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">FAILURES / PARTIAL</span>
+            <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">FAILURES</span>
             <XCircle className="w-4 h-4 text-[#F43F5E]" />
           </div>
           <div className="text-2xl font-display font-bold text-[#F43F5E] tracking-tight">
-            484
+            {summaryStats.failedLaunches.toLocaleString()}
           </div>
           <div className="flex items-center gap-1.5 mt-2 text-[10px] font-mono text-[#8798B3]">
-            <span>10.3% historical anomaly</span>
+            <span>
+              {summaryStats.totalLaunches > 0 
+                ? `${((summaryStats.failedLaunches / summaryStats.totalLaunches) * 100).toFixed(1)}% anomaly rate` 
+                : '0.0% anomaly rate'}
+            </span>
           </div>
           <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#F43F5E] to-transparent opacity-70" />
         </div>
@@ -101,10 +240,13 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
             <Percent className="w-4 h-4 text-[#39D5F2]" />
           </div>
           <div className="text-2xl font-display font-bold text-white tracking-tight">
-            89.6<span className="text-sm text-[#39D5F2] font-mono">%</span>
+            {summaryStats.successRate}<span className="text-sm text-[#39D5F2] font-mono">%</span>
           </div>
           <div className="w-full bg-white/10 h-1.5 rounded-full mt-2.5 overflow-hidden">
-            <div className="bg-[#39D5F2] h-full rounded-full" style={{ width: '89.6%' }} />
+            <div 
+              className="bg-[#39D5F2] h-full rounded-full transition-all duration-500" 
+              style={{ width: `${Math.min(100, Math.max(0, summaryStats.successRate))}%` }} 
+            />
           </div>
           <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#39D5F2] to-transparent opacity-70" />
         </div>
@@ -116,10 +258,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
             <Globe2 className="w-4 h-4 text-[#648CFF]" />
           </div>
           <div className="text-2xl font-display font-bold text-white tracking-tight">
-            38
+            {summaryStats.uniqueCountries}
           </div>
           <div className="flex items-center gap-1.5 mt-2 text-[10px] font-mono text-[#648CFF]">
-            <span>12 autonomous launchers</span>
+            <span>Sovereign launch flags</span>
           </div>
           <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#648CFF] to-transparent opacity-70" />
         </div>
@@ -131,7 +273,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
             <Building2 className="w-4 h-4 text-[#A78BFA]" />
           </div>
           <div className="text-2xl font-display font-bold text-[#A78BFA] tracking-tight">
-            142
+            {summaryStats.uniqueAgencies}
           </div>
           <div className="flex items-center gap-1.5 mt-2 text-[10px] font-mono text-[#8798B3]">
             <span>Gov & Commercial entities</span>
@@ -186,7 +328,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
                     {selectedSite.name}
                   </h3>
                   <p className="text-xs font-mono text-[#39D5F2]">
-                    {selectedSite.country}
+                    {selectedSiteRealStats?.country || selectedSite.country}
                   </p>
                 </div>
 
@@ -197,11 +339,15 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
                 <div className="grid grid-cols-2 gap-2.5 pt-2 font-mono">
                   <div className="p-2.5 rounded-xl bg-[#0A1222]/80 border border-white/5">
                     <span className="text-[10px] text-[#8798B3] block">TOTAL LAUNCHES</span>
-                    <span className="text-lg font-bold text-white">{selectedSite.totalLaunches}</span>
+                    <span className="text-lg font-bold text-white">
+                      {selectedSiteRealStats ? selectedSiteRealStats.totalLaunches.toLocaleString() : selectedSite.totalLaunches.toLocaleString()}
+                    </span>
                   </div>
                   <div className="p-2.5 rounded-xl bg-[#0A1222]/80 border border-white/5">
                     <span className="text-[10px] text-[#8798B3] block">SUCCESS RATE</span>
-                    <span className="text-lg font-bold text-[#10B981]">{selectedSite.successRate}%</span>
+                    <span className="text-lg font-bold text-[#10B981]">
+                      {selectedSiteRealStats ? `${selectedSiteRealStats.successRate}%` : `${selectedSite.successRate}%`}
+                    </span>
                   </div>
                 </div>
 
@@ -247,11 +393,11 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
         </div>
       </div>
 
-      {/* 3. Analytics Below Hero (Time Cadence Area, Country Distribution, Outcomes Donut) */}
+      {/* 3. Analytics Below Hero (Real Decade Cadence Area Chart, Outcomes Donut) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: Global Mission Activity Over Time (7 cols) */}
         <div className="lg:col-span-7 space-panel p-5 rounded-2xl flex flex-col justify-between">
-          <ActivityAreaChart />
+          <ActivityAreaChart data={decadeData} />
         </div>
 
         {/* Right: Outcomes Donut Chart (5 cols) */}
@@ -261,33 +407,36 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
               <span className="w-2 h-2 rounded-full bg-[#10B981]" />
               MISSION OUTCOME TAXONOMY
             </h4>
-            <span className="text-[10px] font-mono text-[#8798B3]">GLOBAL STATS</span>
+            <span className="text-[10px] font-mono text-[#8798B3]">CANONICAL DATASET</span>
           </div>
-          <OutcomesDonutChart />
+          <OutcomesDonutChart 
+            successCount={summaryStats.successfulLaunches} 
+            failureCount={summaryStats.failedLaunches} 
+          />
         </div>
       </div>
 
-      {/* 4. Sovereign Nations Volume & Recent Flight Records */}
+      {/* 4. Sovereign Nations Volume & Real Flight Records Table */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Country-wise distribution (5 cols) */}
         <div className="lg:col-span-5 space-panel p-5 rounded-2xl">
           <div className="flex items-center justify-between pb-3 border-b border-white/10 mb-3">
             <h4 className="text-xs font-mono font-bold text-white uppercase tracking-wider flex items-center gap-2">
               <Globe2 className="w-4 h-4 text-[#39D5F2]" />
-              SOVEREIGN SPACE PROGRAM VOLUME
+              SOVEREIGN LAUNCH VOLUME
             </h4>
-            <span className="text-[10px] font-mono text-[#8798B3]">RANKED</span>
+            <span className="text-[10px] font-mono text-[#8798B3]">ACTUAL DATASET</span>
           </div>
-          <CountryBarChart />
+          <CountryBarChart countries={countryData} />
         </div>
 
-        {/* Recent Significant Missions Table (7 cols) */}
+        {/* Real Flight Operations Log Table (7 cols) */}
         <div className="lg:col-span-7 space-panel p-5 rounded-2xl flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between pb-3 border-b border-white/10 mb-3">
               <h4 className="text-xs font-mono font-bold text-white uppercase tracking-wider flex items-center gap-2">
                 <Rocket className="w-4 h-4 text-[#A78BFA]" />
-                FLIGHT OPERATIONS LOG ({filteredMissions.length} RECORDED)
+                FLIGHT OPERATIONS LOG ({filteredMissions.length.toLocaleString()} MISSIONS)
               </h4>
               <button 
                 onClick={onNavigateToAnalytics}
@@ -298,39 +447,48 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
               </button>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto min-h-[310px]">
               <table className="w-full text-left font-mono text-xs">
                 <thead>
                   <tr className="border-b border-white/10 text-[10px] text-[#8798B3] uppercase">
-                    <th className="pb-2">Mission</th>
+                    <th className="pb-2">Mission / Flight</th>
                     <th className="pb-2">Agency</th>
                     <th className="pb-2">Vehicle</th>
-                    <th className="pb-2">Orbit</th>
+                    <th className="pb-2">Domain</th>
                     <th className="pb-2">Date</th>
-                    <th className="pb-2 text-right">Status</th>
+                    <th className="pb-2 text-right">Outcome</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
-                  {filteredMissions.slice(0, 6).map((m) => (
+                  {currentTableRecords.map((m) => (
                     <tr 
-                      key={m.id} 
+                      key={m.launch_tag} 
                       onClick={() => setSelectedMission(m)}
                       className="hover:bg-[#14233D] transition cursor-pointer group"
                     >
                       <td className="py-2.5 font-sans font-semibold text-white group-hover:text-[#39D5F2] transition flex items-center gap-2">
-                        {m.name}
+                        <span className="truncate max-w-[150px]" title={m.mission || m.flight || m.launch_vehicle}>
+                          {m.mission || m.flight || m.launch_vehicle}
+                        </span>
+                        <span className="text-[9px] font-mono text-[#8798B3]/60 px-1 rounded bg-white/5">
+                          {m.launch_tag}
+                        </span>
                       </td>
-                      <td className="py-2.5 text-[#8798B3]">{m.agency}</td>
-                      <td className="py-2.5 text-white/80">{m.vehicle}</td>
-                      <td className="py-2.5 text-[#39D5F2]">{m.orbit}</td>
-                      <td className="py-2.5 text-[#8798B3]">{m.launchDate}</td>
+                      <td className="py-2.5 text-[#8798B3] truncate max-w-[100px]" title={m.agency}>
+                        {m.agency}
+                      </td>
+                      <td className="py-2.5 text-white/80 truncate max-w-[110px]" title={m.launch_vehicle}>
+                        {m.launch_vehicle}
+                      </td>
+                      <td className="py-2.5 text-[#39D5F2]">{m.launch_class}</td>
+                      <td className="py-2.5 text-[#8798B3]">{m.date}</td>
                       <td className="py-2.5 text-right">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                          m.status === 'Success' 
+                          m.outcome === 'Success' 
                             ? 'bg-[#10B981]/15 text-[#10B981]' 
                             : 'bg-[#F43F5E]/15 text-[#F43F5E]'
                         }`}>
-                          {m.status}
+                          {m.outcome}
                         </span>
                       </td>
                     </tr>
@@ -340,9 +498,33 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
             </div>
           </div>
 
+          {/* Table Pagination & Legend */}
           <div className="pt-3 border-t border-white/5 flex items-center justify-between text-[11px] font-mono text-[#8798B3]">
-            <span>Showing verified orbital launches</span>
-            <span>Click any mission row for telemetry spec</span>
+            <span>
+              Showing {((tablePage - 1) * pageSize) + 1}–{Math.min(tablePage * pageSize, filteredMissions.length)} of {filteredMissions.length.toLocaleString()}
+            </span>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setTablePage(prev => Math.max(prev - 1, 1))}
+                disabled={tablePage === 1}
+                className="p-1 rounded-lg bg-[#0A1222] border border-white/10 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#101B2D]"
+                title="Previous page"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <span className="text-white px-1">
+                {tablePage} / {totalTablePages}
+              </span>
+              <button
+                onClick={() => setTablePage(prev => Math.min(prev + 1, totalTablePages))}
+                disabled={tablePage === totalTablePages}
+                className="p-1 rounded-lg bg-[#0A1222] border border-white/10 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#101B2D]"
+                title="Next page"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

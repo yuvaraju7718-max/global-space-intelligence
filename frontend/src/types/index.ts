@@ -1,5 +1,8 @@
 export type MissionStatus = 'Success' | 'Failure' | 'Partial Failure' | 'Pre-Launch';
 
+export type LaunchOutcome = 'Success' | 'Failure';
+export type LaunchClass = 'Orbital' | 'Deep space';
+
 export type MissionType = 
   | 'Earth Observation' 
   | 'Communications' 
@@ -20,6 +23,128 @@ export type OrbitDestination =
   | 'Mars' 
   | 'Interplanetary' 
   | 'Suborbital';
+
+/**
+ * 19 Canonical Columns from data/global_space_missions_cleaned.csv
+ */
+export interface CleanedMissionRecord {
+  launch_tag: string;
+  date: string;
+  time_utc: string | null;
+  year: number;
+  launch_vehicle: string;
+  flight: string | null;
+  mission: string | null;
+  launch_site: string;
+  launch_pad: string | null;
+  site_country: string;
+  agency: string;
+  launch_country: string;
+  launch_class: LaunchClass;
+  outcome: LaunchOutcome;
+  launch_code: string;
+  apogee_km: number | null;
+  perigee_km: number | null;
+  inclination_deg: number | null;
+  payload_mass_t: number | null;
+}
+
+/**
+ * Statistical Aggregation Types
+ */
+export interface DatasetSummaryStats {
+  totalLaunches: number;
+  successfulLaunches: number;
+  failedLaunches: number;
+  successRate: number;
+  orbitalMissions: number;
+  deepSpaceMissions: number;
+  uniqueCountries: number;
+  uniqueAgencies: number;
+  uniqueVehicles: number;
+  uniqueLaunchSites: number;
+  yearMin: number;
+  yearMax: number;
+}
+
+export interface YearCadenceStat {
+  year: number;
+  total: number;
+  success: number;
+  failure: number;
+  successRate: number;
+}
+
+export interface DecadeCadenceStat {
+  decade: string;
+  total: number;
+  success: number;
+  failure: number;
+  successRate: number;
+}
+
+export interface CountryAggStat {
+  country: string;
+  code?: string;
+  total: number;
+  successful: number;
+  failed: number;
+  successRate: number;
+  shareOfGlobal: number;
+  firstLaunchYear: number;
+  latestLaunchYear: number;
+}
+
+export interface AgencyRankingStat {
+  agency: string;
+  total: number;
+  successful: number;
+  failed: number;
+  successRate: number;
+  primaryCountry: string;
+}
+
+export interface VehicleRankingStat {
+  vehicle: string;
+  total: number;
+  successful: number;
+  failed: number;
+  successRate: number;
+  primaryAgency?: string;
+}
+
+export interface LaunchSiteFreqStat {
+  siteName: string;
+  country: string;
+  totalLaunches: number;
+  successful: number;
+  failed: number;
+  successRate: number;
+  coordinates: [number, number] | null; // null if unverified/sea
+  verified: boolean;
+}
+
+export interface ColumnProfileStat {
+  field: string;
+  inferredType: string;
+  totalCount: number;
+  nonNullCount: number;
+  nullCount: number;
+  missingPercent: number;
+  distinctCount: number;
+  sampleValues: (string | number | null)[];
+}
+
+export interface GlobalSpaceAnalytics {
+  summary: DatasetSummaryStats;
+  yearCadence: YearCadenceStat[];
+  decadeCadence: DecadeCadenceStat[];
+  countryStats: CountryAggStat[];
+  agencyRankings: AgencyRankingStat[];
+  vehicleRankings: VehicleRankingStat[];
+  launchSiteStats: LaunchSiteFreqStat[];
+  columnProfiles: ColumnProfileStat[];
+}
 
 export interface SpaceMission {
   id: string;
