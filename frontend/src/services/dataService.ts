@@ -6,11 +6,17 @@ import {
   YearCadenceStat,
   DecadeCadenceStat,
   CountryAggStat,
+  CountryDeepProfile,
   AgencyRankingStat,
   VehicleRankingStat,
   LaunchSiteFreqStat,
   ColumnProfileStat,
-  GlobalSpaceAnalytics
+  GlobalSpaceAnalytics,
+  PayloadMassStats,
+  OrbitalTrajectoryStats,
+  MissionClassStats,
+  VehicleDetailedStat,
+  MissionAnalyticsData
 } from '../types';
 
 /**
@@ -349,6 +355,29 @@ export function calculateDecadeCadence(records: CleanedMissionRecord[]): DecadeC
   return result;
 }
 
+export const COUNTRY_CODE_MAP: Record<string, string> = {
+  'USA': 'USA',
+  'USSR': 'SUN',
+  'Russia': 'RUS',
+  'China': 'CHN',
+  'France': 'FRA',
+  'Japan': 'JPN',
+  'India': 'IND',
+  'New Zealand': 'NZL',
+  'Iran': 'IRN',
+  'ESA': 'ESA',
+  'Israel': 'ISR',
+  'Italy': 'ITA',
+  'South Korea': 'KOR',
+  'North Korea': 'PRK',
+  'Cayman Is.': 'CYM',
+  'ELDO': 'ELD',
+  'Germany': 'DEU',
+  'Brazil': 'BRA',
+  'UK': 'GBR',
+  'Australia': 'AUS'
+};
+
 /**
  * 4. Country-wise launch counts and success rates
  */
@@ -387,6 +416,7 @@ export function calculateCountryStats(records: CleanedMissionRecord[]): CountryA
   for (const [country, item] of map.entries()) {
     result.push({
       country,
+      code: COUNTRY_CODE_MAP[country] || country.slice(0, 3).toUpperCase(),
       total: item.total,
       successful: item.success,
       failed: item.failure,
@@ -503,11 +533,32 @@ export function calculateVehicleRankings(
  * Unrecognized sites have coordinates = null and verified = false.
  */
 export function calculateLaunchSiteStats(records: CleanedMissionRecord[]): LaunchSiteFreqStat[] {
-  const map = new Map<string, { total: number; success: number; failure: number; countryMap: Map<string, number> }>();
+  const map = new Map<string, {
+    total: number;
+    success: number;
+    failure: number;
+    countryMap: Map<string, number>;
+    vehicleMap: Map<string, number>;
+    agencyMap: Map<string, number>;
+    pads: Set<string>;
+    firstDate: string;
+    latestDate: string;
+  }>();
 
   for (const r of records) {
     const site = r.launch_site || 'Unknown';
-    const entry = map.get(site) || { total: 0, success: 0, failure: 0, countryMap: new Map<string, number>() };
+    const entry = map.get(site) || {
+      total: 0,
+      success: 0,
+      failure: 0,
+      countryMap: new Map<string, number>(),
+      vehicleMap: new Map<string, number>(),
+      agencyMap: new Map<string, number>(),
+      pads: new Set<string>(),
+      firstDate: r.date,
+      latestDate: r.date
+    };
+
     entry.total++;
     if (r.outcome === 'Success') entry.success++;
     else if (r.outcome === 'Failure') entry.failure++;
@@ -516,6 +567,20 @@ export function calculateLaunchSiteStats(records: CleanedMissionRecord[]): Launc
     if (country) {
       entry.countryMap.set(country, (entry.countryMap.get(country) || 0) + 1);
     }
+    if (r.launch_vehicle) {
+      entry.vehicleMap.set(r.launch_vehicle, (entry.vehicleMap.get(r.launch_vehicle) || 0) + 1);
+    }
+    if (r.agency) {
+      entry.agencyMap.set(r.agency, (entry.agencyMap.get(r.agency) || 0) + 1);
+    }
+    if (r.launch_pad) {
+      entry.pads.add(r.launch_pad);
+    }
+    if (r.date) {
+      if (!entry.firstDate || r.date < entry.firstDate) entry.firstDate = r.date;
+      if (!entry.latestDate || r.date > entry.latestDate) entry.latestDate = r.date;
+    }
+
     map.set(site, entry);
   }
 
@@ -530,6 +595,18 @@ export function calculateLaunchSiteStats(records: CleanedMissionRecord[]): Launc
       }
     }
 
+    // Sort top vehicles
+    const sortedVehicles = Array.from(item.vehicleMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([v]) => v);
+
+    // Sort top agencies
+    const sortedAgencies = Array.from(item.agencyMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([a]) => a);
+
     const coords = VERIFIED_LAUNCH_SITE_COORDINATES[siteName] ?? null;
 
     result.push({
@@ -540,7 +617,12 @@ export function calculateLaunchSiteStats(records: CleanedMissionRecord[]): Launc
       failed: item.failure,
       successRate: item.total > 0 ? Number(((item.success / item.total) * 100).toFixed(1)) : 0,
       coordinates: coords,
-      verified: coords !== null
+      verified: coords !== null,
+      primaryVehicles: sortedVehicles,
+      primaryAgencies: sortedAgencies,
+      pads: Array.from(item.pads).slice(0, 6),
+      firstLaunchDate: item.firstDate,
+      latestLaunchDate: item.latestDate
     });
   }
 
@@ -549,51 +631,97 @@ export function calculateLaunchSiteStats(records: CleanedMissionRecord[]): Launc
 }
 
 /**
+ * Filter missions specifically originating from a given launch site.
+ */
+export function getMissionsForSite(
+  records: CleanedMissionRecord[],
+  siteName: string,
+  limit = 10
+): CleanedMissionRecord[] {
+  const normalized = siteName.toLowerCase().trim();
+  const matched = records.filter(r => 
+    r.launch_site.toLowerCase().trim() === normalized ||
+    r.launch_site.toLowerCase().includes(normalized) ||
+    normalized.includes(r.launch_site.toLowerCase())
+  );
+  return matched.slice(0, limit);
+}
+
+/**
  * 8. Column Missing-Value and Distinct-Value Profiling for all 19 columns
+ * Includes numeric min/max/mean/median and categorical frequency distributions.
  */
 export function calculateColumnProfiles(records: CleanedMissionRecord[]): ColumnProfileStat[] {
-  const columns: Array<{ field: keyof CleanedMissionRecord; inferredType: string }> = [
-    { field: 'launch_tag', inferredType: 'string (UUID/Identifier)' },
-    { field: 'date', inferredType: 'date (YYYY-MM-DD)' },
-    { field: 'time_utc', inferredType: 'string (HH:MM:SS)' },
-    { field: 'year', inferredType: 'int64' },
-    { field: 'launch_vehicle', inferredType: 'string (Categorical)' },
-    { field: 'flight', inferredType: 'string' },
-    { field: 'mission', inferredType: 'string' },
-    { field: 'launch_site', inferredType: 'string (Categorical)' },
-    { field: 'launch_pad', inferredType: 'string' },
-    { field: 'site_country', inferredType: 'string (Categorical)' },
-    { field: 'agency', inferredType: 'string (Categorical)' },
-    { field: 'launch_country', inferredType: 'string (Categorical)' },
-    { field: 'launch_class', inferredType: 'string (Enum: Orbital | Deep space)' },
-    { field: 'outcome', inferredType: 'string (Enum: Success | Failure)' },
-    { field: 'launch_code', inferredType: 'string (Categorical)' },
-    { field: 'apogee_km', inferredType: 'float64' },
-    { field: 'perigee_km', inferredType: 'float64' },
-    { field: 'inclination_deg', inferredType: 'float64' },
-    { field: 'payload_mass_t', inferredType: 'float64' }
+  const columns: Array<{ field: keyof CleanedMissionRecord; inferredType: string; isNumeric: boolean }> = [
+    { field: 'launch_tag', inferredType: 'string (UUID/Identifier)', isNumeric: false },
+    { field: 'date', inferredType: 'date (YYYY-MM-DD)', isNumeric: false },
+    { field: 'time_utc', inferredType: 'string (HH:MM:SS)', isNumeric: false },
+    { field: 'year', inferredType: 'int64', isNumeric: true },
+    { field: 'launch_vehicle', inferredType: 'string (Categorical)', isNumeric: false },
+    { field: 'flight', inferredType: 'string', isNumeric: false },
+    { field: 'mission', inferredType: 'string', isNumeric: false },
+    { field: 'launch_site', inferredType: 'string (Categorical)', isNumeric: false },
+    { field: 'launch_pad', inferredType: 'string', isNumeric: false },
+    { field: 'site_country', inferredType: 'string (Categorical)', isNumeric: false },
+    { field: 'agency', inferredType: 'string (Categorical)', isNumeric: false },
+    { field: 'launch_country', inferredType: 'string (Categorical)', isNumeric: false },
+    { field: 'launch_class', inferredType: 'string (Enum: Orbital | Deep space)', isNumeric: false },
+    { field: 'outcome', inferredType: 'string (Enum: Success | Failure)', isNumeric: false },
+    { field: 'launch_code', inferredType: 'string (Categorical)', isNumeric: false },
+    { field: 'apogee_km', inferredType: 'float64', isNumeric: true },
+    { field: 'perigee_km', inferredType: 'float64', isNumeric: true },
+    { field: 'inclination_deg', inferredType: 'float64', isNumeric: true },
+    { field: 'payload_mass_t', inferredType: 'float64', isNumeric: true }
   ];
 
   const total = records.length;
 
-  return columns.map(({ field, inferredType }) => {
+  return columns.map(({ field, inferredType, isNumeric }) => {
     let nonNullCount = 0;
     const distinctSet = new Set<string | number>();
     const samples: (string | number | null)[] = [];
+    const numValues: number[] = [];
+    const freqMap = new Map<string, number>();
 
     for (let i = 0; i < total; i++) {
       const val = records[i][field];
-      if (val !== null && val !== undefined) {
+      if (val !== null && val !== undefined && val !== '') {
         nonNullCount++;
         distinctSet.add(val);
         if (samples.length < 3 && !samples.includes(val)) {
           samples.push(val);
+        }
+
+        if (isNumeric && typeof val === 'number' && !isNaN(val)) {
+          numValues.push(val);
+        } else {
+          const str = String(val);
+          freqMap.set(str, (freqMap.get(str) || 0) + 1);
         }
       }
     }
 
     const nullCount = total - nonNullCount;
     const missingPercent = total > 0 ? Number(((nullCount / total) * 100).toFixed(2)) : 0;
+
+    let min: number | null = null;
+    let max: number | null = null;
+    let mean: number | null = null;
+    let median: number | null = null;
+
+    if (isNumeric && numValues.length > 0) {
+      numValues.sort((a, b) => a - b);
+      min = numValues[0];
+      max = numValues[numValues.length - 1];
+      const sum = numValues.reduce((s, v) => s + v, 0);
+      mean = Number((sum / numValues.length).toFixed(2));
+      median = numValues[Math.floor(numValues.length / 2)];
+    }
+
+    const topValues = Array.from(freqMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([value, count]) => ({ value, count }));
 
     return {
       field,
@@ -603,9 +731,60 @@ export function calculateColumnProfiles(records: CleanedMissionRecord[]): Column
       nullCount,
       missingPercent,
       distinctCount: distinctSet.size,
-      sampleValues: samples
+      sampleValues: samples,
+      isNumeric,
+      min,
+      max,
+      mean,
+      median,
+      topValues: !isNumeric ? topValues : undefined
     };
   });
+}
+
+/**
+ * 19. Export Cleaned or Filtered Mission Records to RFC 4180 Valid CSV
+ */
+export function exportRecordsToCSV(records: CleanedMissionRecord[]): string {
+  const headers: Array<keyof CleanedMissionRecord> = [
+    'launch_tag',
+    'date',
+    'time_utc',
+    'year',
+    'launch_vehicle',
+    'flight',
+    'mission',
+    'launch_site',
+    'launch_pad',
+    'site_country',
+    'agency',
+    'launch_country',
+    'launch_class',
+    'outcome',
+    'launch_code',
+    'apogee_km',
+    'perigee_km',
+    'inclination_deg',
+    'payload_mass_t'
+  ];
+
+  const escapeCSV = (val: any): string => {
+    if (val === null || val === undefined) return '';
+    const str = String(val);
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  const lines: string[] = [headers.join(',')];
+  for (let i = 0; i < records.length; i++) {
+    const r = records[i];
+    const row = headers.map(h => escapeCSV(r[h]));
+    lines.push(row.join(','));
+  }
+
+  return lines.join('\r\n');
 }
 
 /**
@@ -621,5 +800,599 @@ export function calculateGlobalAnalytics(records: CleanedMissionRecord[]): Globa
     vehicleRankings: calculateVehicleRankings(records),
     launchSiteStats: calculateLaunchSiteStats(records),
     columnProfiles: calculateColumnProfiles(records)
+  };
+}
+
+/**
+ * 10. Extract deep operational profile for a sovereign state.
+ */
+export function getCountryDeepProfile(
+  records: CleanedMissionRecord[],
+  countryName: string
+): CountryDeepProfile | null {
+  if (!countryName || records.length === 0) return null;
+  const norm = countryName.toLowerCase().trim();
+
+  const matched = records.filter(r => 
+    r.launch_country && (
+      r.launch_country.toLowerCase().trim() === norm ||
+      (norm.includes('russia') && r.launch_country.toLowerCase().includes('russia')) ||
+      (norm.includes('ussr') && r.launch_country.toLowerCase().includes('ussr')) ||
+      (norm.includes('united states') && r.launch_country.toLowerCase().includes('usa')) ||
+      (norm.includes('usa') && r.launch_country.toLowerCase().includes('usa'))
+    )
+  );
+
+  if (matched.length === 0) return null;
+
+  let successful = 0;
+  let failed = 0;
+  let firstYear = Infinity;
+  let latestYear = -Infinity;
+
+  const vehicleMap = new Map<string, { count: number; success: number }>();
+  const agencyMap = new Map<string, { count: number; success: number }>();
+  const yearMap = new Map<number, { total: number; success: number; failure: number }>();
+
+  for (let i = 0; i < matched.length; i++) {
+    const r = matched[i];
+    if (r.outcome === 'Success') successful++;
+    else if (r.outcome === 'Failure') failed++;
+
+    if (r.year < firstYear) firstYear = r.year;
+    if (r.year > latestYear) latestYear = r.year;
+
+    // Vehicle breakdown
+    const vName = r.launch_vehicle || 'Unknown Vehicle';
+    const vEntry = vehicleMap.get(vName) || { count: 0, success: 0 };
+    vEntry.count++;
+    if (r.outcome === 'Success') vEntry.success++;
+    vehicleMap.set(vName, vEntry);
+
+    // Agency breakdown
+    const aName = r.agency || 'Unknown Agency';
+    const aEntry = agencyMap.get(aName) || { count: 0, success: 0 };
+    aEntry.count++;
+    if (r.outcome === 'Success') aEntry.success++;
+    agencyMap.set(aName, aEntry);
+
+    // Yearly cadence
+    const yEntry = yearMap.get(r.year) || { total: 0, success: 0, failure: 0 };
+    yEntry.total++;
+    if (r.outcome === 'Success') yEntry.success++;
+    else if (r.outcome === 'Failure') yEntry.failure++;
+    yearMap.set(r.year, yEntry);
+  }
+
+  const topVehicles = Array.from(vehicleMap.entries())
+    .map(([vehicle, d]) => ({
+      vehicle,
+      count: d.count,
+      successRate: Number(((d.success / d.count) * 100).toFixed(1))
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  const topAgencies = Array.from(agencyMap.entries())
+    .map(([agency, d]) => ({
+      agency,
+      count: d.count,
+      successRate: Number(((d.success / d.count) * 100).toFixed(1))
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  const sortedYears = Array.from(yearMap.keys()).sort((a, b) => a - b);
+  const yearlyCadence: YearCadenceStat[] = sortedYears.map(yr => {
+    const y = yearMap.get(yr)!;
+    return {
+      year: yr,
+      total: y.total,
+      success: y.success,
+      failure: y.failure,
+      successRate: y.total > 0 ? Number(((y.success / y.total) * 100).toFixed(1)) : 0
+    };
+  });
+
+  const total = matched.length;
+  const successRate = total > 0 ? Number(((successful / total) * 100).toFixed(1)) : 0;
+  const shareOfGlobal = records.length > 0 ? Number(((total / records.length) * 100).toFixed(2)) : 0;
+
+  // Recent missions, sorted descending by date/year
+  const recentMissions = [...matched]
+    .sort((a, b) => (b.date || `${b.year}`).localeCompare(a.date || `${a.year}`))
+    .slice(0, 15);
+
+  return {
+    country: matched[0].launch_country,
+    code: COUNTRY_CODE_MAP[matched[0].launch_country] || matched[0].launch_country.slice(0, 3).toUpperCase(),
+    total,
+    successful,
+    failed,
+    successRate,
+    shareOfGlobal,
+    firstYear: firstYear === Infinity ? null : firstYear,
+    latestYear: latestYear === -Infinity ? null : latestYear,
+    topVehicles,
+    topAgencies,
+    yearlyCadence,
+    recentMissions,
+    // Statistical validity check: small sample (< 20 flights) has high variance
+    isSmallSample: total < 20
+  };
+}
+
+/**
+ * 11. Extract missions for a given year with optional limit and sorting.
+ */
+export function getMissionsForYear(
+  records: CleanedMissionRecord[],
+  year: number,
+  limit = 200
+): CleanedMissionRecord[] {
+  const filtered = records.filter(r => r.year === year);
+  // Sort descending by date
+  filtered.sort((a, b) => (b.date || `${b.year}`).localeCompare(a.date || `${a.year}`));
+  return limit > 0 ? filtered.slice(0, limit) : filtered;
+}
+
+/**
+ * 12. Multidimensional filtering for missions.
+ */
+export function filterMissions(
+  records: CleanedMissionRecord[],
+  filters: {
+    country?: string;
+    vehicle?: string;
+    outcome?: string;
+    year?: number | null;
+    searchQuery?: string;
+  }
+): CleanedMissionRecord[] {
+  return records.filter(r => {
+    if (filters.year !== undefined && filters.year !== null && r.year !== filters.year) {
+      return false;
+    }
+    if (filters.country && filters.country !== 'All' && r.launch_country !== filters.country) {
+      return false;
+    }
+    if (filters.vehicle && filters.vehicle !== 'All' && r.launch_vehicle !== filters.vehicle) {
+      return false;
+    }
+    if (filters.outcome && filters.outcome !== 'All' && r.outcome !== filters.outcome) {
+      return false;
+    }
+    if (filters.searchQuery) {
+      const q = filters.searchQuery.toLowerCase().trim();
+      const matchMission = r.mission?.toLowerCase().includes(q) ?? false;
+      const matchVehicle = r.launch_vehicle.toLowerCase().includes(q);
+      const matchTag = r.launch_tag.toLowerCase().includes(q);
+      const matchSite = r.launch_site.toLowerCase().includes(q);
+      const matchAgency = r.agency.toLowerCase().includes(q);
+      const matchCountry = r.launch_country.toLowerCase().includes(q);
+      if (!matchMission && !matchVehicle && !matchTag && !matchSite && !matchAgency && !matchCountry) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+/**
+ * 13. Find peak launch years in history.
+ */
+export function getPeakLaunchYears(
+  cadence: YearCadenceStat[],
+  topN = 5
+): YearCadenceStat[] {
+  return [...cadence].sort((a, b) => b.total - a.total).slice(0, topN);
+}
+
+/**
+ * 14. Payload Mass Distribution and Aggregation Analytics
+ * Safely handles missing/null payload masses without treating them as zero.
+ */
+export function calculatePayloadMassStats(records: CleanedMissionRecord[]): PayloadMassStats {
+  const valid = records.filter(r => r.payload_mass_t !== null && r.payload_mass_t !== undefined);
+  if (valid.length === 0) {
+    return {
+      totalMassT: 0,
+      averageMassT: 0,
+      medianMassT: 0,
+      maxMassT: 0,
+      validCount: 0,
+      topHeaviestMissions: [],
+      massBuckets: [],
+      countryMassBreakdown: []
+    };
+  }
+
+  const sorted = [...valid].sort((a, b) => (a.payload_mass_t || 0) - (b.payload_mass_t || 0));
+  const total = sorted.reduce((sum, r) => sum + (r.payload_mass_t || 0), 0);
+  const avg = total / sorted.length;
+  const med = sorted[Math.floor(sorted.length / 2)].payload_mass_t || 0;
+  const max = sorted[sorted.length - 1].payload_mass_t || 0;
+
+  // 5 standardized payload mass lift classes
+  const buckets = [
+    { category: 'CubeSat / MicroSat', rangeLabel: '< 1.0 t', min: 0, max: 1.0, color: '#39D5F2', count: 0 },
+    { category: 'Light Lift Class', rangeLabel: '1.0 – 5.0 t', min: 1.0, max: 5.0, color: '#10B981', count: 0 },
+    { category: 'Medium Lift Class', rangeLabel: '5.0 – 15.0 t', min: 5.0, max: 15.0, color: '#648CFF', count: 0 },
+    { category: 'Heavy Lift Class', rangeLabel: '15.0 – 50.0 t', min: 15.0, max: 50.0, color: '#A78BFA', count: 0 },
+    { category: 'Super Heavy / Crew', rangeLabel: '> 50.0 t', min: 50.0, max: Infinity, color: '#F59E0B', count: 0 }
+  ];
+
+  sorted.forEach(r => {
+    const m = r.payload_mass_t || 0;
+    for (const b of buckets) {
+      if (m >= b.min && (b.max === Infinity ? true : m < b.max)) {
+        b.count++;
+        break;
+      }
+    }
+  });
+
+  const massBuckets = buckets.map(b => ({
+    category: b.category,
+    rangeLabel: b.rangeLabel,
+    count: b.count,
+    percent: Number(((b.count / sorted.length) * 100).toFixed(1)),
+    color: b.color
+  }));
+
+  const topHeaviestMissions = [...sorted]
+    .reverse()
+    .slice(0, 5)
+    .map(r => ({
+      massT: r.payload_mass_t || 0,
+      mission: r.mission || r.flight || r.launch_vehicle,
+      vehicle: r.launch_vehicle,
+      country: r.launch_country || r.site_country,
+      date: r.date,
+      launchTag: r.launch_tag,
+      outcome: r.outcome
+    }));
+
+  // Country payload mass breakdown
+  const cMap = new Map<string, { totalMass: number; count: number; maxMass: number }>();
+  sorted.forEach(r => {
+    const c = r.launch_country || 'Unknown';
+    const entry = cMap.get(c) || { totalMass: 0, count: 0, maxMass: 0 };
+    const m = r.payload_mass_t || 0;
+    entry.totalMass += m;
+    entry.count++;
+    if (m > entry.maxMass) entry.maxMass = m;
+    cMap.set(c, entry);
+  });
+
+  const countryMassBreakdown = Array.from(cMap.entries())
+    .map(([country, d]) => ({
+      country,
+      totalMassT: Number(d.totalMass.toFixed(1)),
+      averageMassT: Number((d.totalMass / d.count).toFixed(2)),
+      maxMassT: Number(d.maxMass.toFixed(2)),
+      count: d.count
+    }))
+    .sort((a, b) => b.totalMassT - a.totalMassT)
+    .slice(0, 8);
+
+  return {
+    totalMassT: Number(total.toFixed(1)),
+    averageMassT: Number(avg.toFixed(2)),
+    medianMassT: Number(med.toFixed(2)),
+    maxMassT: Number(max.toFixed(2)),
+    validCount: sorted.length,
+    topHeaviestMissions,
+    massBuckets,
+    countryMassBreakdown
+  };
+}
+
+/**
+ * 15. Orbital / Trajectory Altitude & Inclination Analytics
+ * Excludes missing/null orbital parameters from calculations.
+ */
+export function calculateOrbitalTrajectoryStats(records: CleanedMissionRecord[]): OrbitalTrajectoryStats {
+  // Apogee
+  const validApogee = records
+    .filter(r => r.apogee_km !== null && r.apogee_km !== undefined && !isNaN(r.apogee_km))
+    .map(r => r.apogee_km as number)
+    .sort((a, b) => a - b);
+
+  let apogeeMedian = 0;
+  let apogeeAvg = 0;
+  let apogeeMax = 0;
+  let apogeeMin = 0;
+  const apogeeRegimes = [
+    { regime: 'Low Earth Orbit (LEO)', range: '< 2,000 km', count: 0, percent: 0 },
+    { regime: 'Medium Earth Orbit (MEO)', range: '2,000 – 30,000 km', count: 0, percent: 0 },
+    { regime: 'Geostationary / GTO', range: '30,000 – 40,000 km', count: 0, percent: 0 },
+    { regime: 'High Elliptic / Deep Space', range: '> 40,000 km', count: 0, percent: 0 }
+  ];
+
+  if (validApogee.length > 0) {
+    apogeeMedian = validApogee[Math.floor(validApogee.length / 2)];
+    apogeeAvg = validApogee.reduce((sum, v) => sum + v, 0) / validApogee.length;
+    apogeeMax = validApogee[validApogee.length - 1];
+    apogeeMin = validApogee[0];
+
+    validApogee.forEach(ap => {
+      if (ap < 2000) apogeeRegimes[0].count++;
+      else if (ap >= 2000 && ap < 30000) apogeeRegimes[1].count++;
+      else if (ap >= 30000 && ap <= 40000) apogeeRegimes[2].count++;
+      else apogeeRegimes[3].count++;
+    });
+
+    apogeeRegimes.forEach(r => {
+      r.percent = Number(((r.count / validApogee.length) * 100).toFixed(1));
+    });
+  }
+
+  // Perigee
+  const validPerigee = records
+    .filter(r => r.perigee_km !== null && r.perigee_km !== undefined && !isNaN(r.perigee_km))
+    .map(r => r.perigee_km as number)
+    .sort((a, b) => a - b);
+
+  let perigeeMedian = 0;
+  let perigeeAvg = 0;
+  let perigeeMax = 0;
+  let perigeeMin = 0;
+
+  if (validPerigee.length > 0) {
+    perigeeMedian = validPerigee[Math.floor(validPerigee.length / 2)];
+    perigeeAvg = validPerigee.reduce((sum, v) => sum + v, 0) / validPerigee.length;
+    perigeeMax = validPerigee[validPerigee.length - 1];
+    perigeeMin = validPerigee[0];
+  }
+
+  // Inclination
+  const validInc = records
+    .filter(r => r.inclination_deg !== null && r.inclination_deg !== undefined && !isNaN(r.inclination_deg))
+    .map(r => r.inclination_deg as number)
+    .sort((a, b) => a - b);
+
+  let incMedian = 0;
+  const incClusters = [
+    { name: 'Equatorial / Near-Equator', band: '< 20°', count: 0, percent: 0, description: 'Direct eastward launches from Kourou & San Marco' },
+    { name: 'Cape Canaveral Corridor', band: '20°–35°', count: 0, percent: 0, description: 'Florida Kennedy & Canaveral standard ~28.5° launches' },
+    { name: 'Mid-Latitude / ISS Standard', band: '45°–55°', count: 0, percent: 0, description: 'Baikonur Cosmodrome & International Space Station ~51.6°' },
+    { name: 'Molniya / Russian High-Latitude', band: '60°–75°', count: 0, percent: 0, description: 'Plesetsk high-apogee northern hemisphere coverage ~63.4°' },
+    { name: 'Sun-Synchronous & Polar', band: '80°–105°', count: 0, percent: 0, description: 'Vandenberg, Jiuquan, & Taiyuan polar Earth observation ~97-98°' },
+    { name: 'Retrograde Trajectories', band: '> 105°', count: 0, percent: 0, description: 'Westward orbital insertion (e.g. Israeli Shavit Mediterranean flights)' }
+  ];
+
+  if (validInc.length > 0) {
+    incMedian = validInc[Math.floor(validInc.length / 2)];
+
+    validInc.forEach(inc => {
+      if (inc < 20) incClusters[0].count++;
+      else if (inc >= 20 && inc < 35) incClusters[1].count++;
+      else if (inc >= 45 && inc < 55) incClusters[2].count++;
+      else if (inc >= 60 && inc < 75) incClusters[3].count++;
+      else if (inc >= 80 && inc <= 105) incClusters[4].count++;
+      else if (inc > 105) incClusters[5].count++;
+    });
+
+    incClusters.forEach(c => {
+      c.percent = Number(((c.count / validInc.length) * 100).toFixed(1));
+    });
+  }
+
+  // Apogee vs Perigee paired scatter sample
+  const pairedMissions = records.filter(r => 
+    r.apogee_km !== null && r.apogee_km !== undefined &&
+    r.perigee_km !== null && r.perigee_km !== undefined
+  );
+
+  const step = Math.max(1, Math.floor(pairedMissions.length / 100));
+  const scatterSample = pairedMissions
+    .filter((_, idx) => idx % step === 0)
+    .slice(0, 100)
+    .map(r => ({
+      apogeeKm: r.apogee_km as number,
+      perigeeKm: r.perigee_km as number,
+      inclinationDeg: r.inclination_deg,
+      mission: r.mission || r.flight || r.launch_vehicle,
+      vehicle: r.launch_vehicle,
+      launchClass: r.launch_class,
+      outcome: r.outcome,
+      year: r.year
+    }));
+
+  return {
+    apogee: {
+      validCount: validApogee.length,
+      medianKm: Number(apogeeMedian.toFixed(1)),
+      avgKm: Number(apogeeAvg.toFixed(1)),
+      maxKm: Number(apogeeMax.toFixed(1)),
+      minKm: Number(apogeeMin.toFixed(1)),
+      regimes: apogeeRegimes
+    },
+    perigee: {
+      validCount: validPerigee.length,
+      medianKm: Number(perigeeMedian.toFixed(1)),
+      avgKm: Number(perigeeAvg.toFixed(1)),
+      maxKm: Number(perigeeMax.toFixed(1)),
+      minKm: Number(perigeeMin.toFixed(1))
+    },
+    inclination: {
+      validCount: validInc.length,
+      medianDeg: Number(incMedian.toFixed(1)),
+      clusters: incClusters
+    },
+    scatterSample
+  };
+}
+
+/**
+ * 16. Mission Classification Analytics (Orbital vs Deep Space)
+ */
+export function calculateMissionClassStats(records: CleanedMissionRecord[]): MissionClassStats {
+  const total = records.length;
+  let orbCount = 0;
+  let orbSuccess = 0;
+  let orbFail = 0;
+  let orbMassTotal = 0;
+  let orbMassCount = 0;
+
+  let deepCount = 0;
+  let deepSuccess = 0;
+  let deepFail = 0;
+  let deepMassTotal = 0;
+  let deepMassCount = 0;
+
+  records.forEach(r => {
+    const isOrb = r.launch_class === 'Orbital';
+    const isSuccess = r.outcome === 'Success';
+    const m = r.payload_mass_t;
+
+    if (isOrb) {
+      orbCount++;
+      if (isSuccess) orbSuccess++;
+      else orbFail++;
+      if (m !== null && m !== undefined) {
+        orbMassTotal += m;
+        orbMassCount++;
+      }
+    } else {
+      deepCount++;
+      if (isSuccess) deepSuccess++;
+      else deepFail++;
+      if (m !== null && m !== undefined) {
+        deepMassTotal += m;
+        deepMassCount++;
+      }
+    }
+  });
+
+  return {
+    orbital: {
+      count: orbCount,
+      percent: total > 0 ? Number(((orbCount / total) * 100).toFixed(1)) : 0,
+      success: orbSuccess,
+      failure: orbFail,
+      successRate: orbCount > 0 ? Number(((orbSuccess / orbCount) * 100).toFixed(1)) : 0,
+      totalMassT: Number(orbMassTotal.toFixed(1)),
+      avgMassT: orbMassCount > 0 ? Number((orbMassTotal / orbMassCount).toFixed(2)) : 0
+    },
+    deepSpace: {
+      count: deepCount,
+      percent: total > 0 ? Number(((deepCount / total) * 100).toFixed(1)) : 0,
+      success: deepSuccess,
+      failure: deepFail,
+      successRate: deepCount > 0 ? Number(((deepSuccess / deepCount) * 100).toFixed(1)) : 0,
+      totalMassT: Number(deepMassTotal.toFixed(1)),
+      avgMassT: deepMassCount > 0 ? Number((deepMassTotal / deepMassCount).toFixed(2)) : 0
+    }
+  };
+}
+
+/**
+ * 17. Launch Vehicle Detailed Performance & Reliability
+ */
+export function calculateVehicleDetailedStats(
+  records: CleanedMissionRecord[],
+  topN = 25
+): VehicleDetailedStat[] {
+  const map = new Map<string, {
+    total: number;
+    success: number;
+    failure: number;
+    countryMap: Map<string, number>;
+    agencyMap: Map<string, number>;
+    totalMass: number;
+    massCount: number;
+    firstYear: number;
+    latestYear: number;
+  }>();
+
+  records.forEach(r => {
+    const v = r.launch_vehicle || 'Unknown Vehicle';
+    const entry = map.get(v) || {
+      total: 0,
+      success: 0,
+      failure: 0,
+      countryMap: new Map<string, number>(),
+      agencyMap: new Map<string, number>(),
+      totalMass: 0,
+      massCount: 0,
+      firstYear: r.year,
+      latestYear: r.year
+    };
+
+    entry.total++;
+    if (r.outcome === 'Success') entry.success++;
+    else if (r.outcome === 'Failure') entry.failure++;
+
+    const country = r.launch_country || r.site_country || '';
+    if (country) {
+      entry.countryMap.set(country, (entry.countryMap.get(country) || 0) + 1);
+    }
+    if (r.agency) {
+      entry.agencyMap.set(r.agency, (entry.agencyMap.get(r.agency) || 0) + 1);
+    }
+
+    if (r.payload_mass_t !== null && r.payload_mass_t !== undefined) {
+      entry.totalMass += r.payload_mass_t;
+      entry.massCount++;
+    }
+
+    if (r.year < entry.firstYear) entry.firstYear = r.year;
+    if (r.year > entry.latestYear) entry.latestYear = r.year;
+
+    map.set(v, entry);
+  });
+
+  const result: VehicleDetailedStat[] = [];
+  for (const [vehicle, d] of map.entries()) {
+    let topCountry = 'Global';
+    let maxC = 0;
+    for (const [c, count] of d.countryMap.entries()) {
+      if (count > maxC) {
+        maxC = count;
+        topCountry = c;
+      }
+    }
+
+    let topAgency = 'Various';
+    let maxA = 0;
+    for (const [a, count] of d.agencyMap.entries()) {
+      if (count > maxA) {
+        maxA = count;
+        topAgency = a;
+      }
+    }
+
+    result.push({
+      vehicle,
+      total: d.total,
+      success: d.success,
+      failure: d.failure,
+      successRate: d.total > 0 ? Number(((d.success / d.total) * 100).toFixed(1)) : 0,
+      primaryCountry: topCountry,
+      primaryAgency: topAgency,
+      totalMassT: Number(d.totalMass.toFixed(1)),
+      avgMassT: d.massCount > 0 ? Number((d.totalMass / d.massCount).toFixed(2)) : 0,
+      firstYear: d.firstYear,
+      latestYear: d.latestYear,
+      // Small sample context: fewer than 10 flights carries high variance
+      isSmallSample: d.total < 10
+    });
+  }
+
+  result.sort((a, b) => b.total - a.total);
+  return topN > 0 ? result.slice(0, topN) : result;
+}
+
+/**
+ * 18. Master Mission Analytics Calculation
+ */
+export function calculateMissionAnalytics(records: CleanedMissionRecord[]): MissionAnalyticsData {
+  return {
+    payloadMass: calculatePayloadMassStats(records),
+    orbitalTrajectory: calculateOrbitalTrajectoryStats(records),
+    missionClass: calculateMissionClassStats(records),
+    topVehicles: calculateVehicleDetailedStats(records, 25)
   };
 }
